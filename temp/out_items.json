@@ -1,0 +1,46 @@
+{
+  "items": [
+    {
+      "descricao": "FITA PVC AREIA MATT GUARARAPES 100MM",
+      "quantidade": 30.0,
+      "valor_unit": 6.71,
+      "valor_total": 201.3,
+      "documento": "43251007928549000190550040007829581753240315.pdf"
+    },
+    {
+      "descricao": "ADESIVO SELANTE PU 40 CINZA 400G",
+      "quantidade": 8.0,
+      "valor_unit": 23.53,
+      "valor_total": 188.24,
+      "documento": "43251007928549000190550040007829581753240315.pdf"
+    },
+    {
+      "descricao": "ADESIVO SELANTE PU 40 BRANCO 400G",
+      "quantidade": 4.0,
+      "valor_unit": 24.48,
+      "valor_total": 97.92,
+      "documento": "43251007928549000190550040007829581753240315.pdf"
+    },
+    {
+      "descricao": "ADESIVO SILICONE FIXA ESPELHO 360G ARTECOLA",
+      "quantidade": 4.0,
+      "valor_unit": 23.53,
+      "valor_total": 94.12,
+      "documento": "43251007928549000190550040007829581753240315.pdf"
+    },
+    {
+      "descricao": "ADESIVO SILICONE ACETICO INCOLOR 270 G ARTECOLA",
+      "quantidade": 2.0,
+      "valor_unit": 18.81,
+      "valor_total": 37.62,
+      "documento": "43251007928549000190550040007829581753240315.pdf"
+    },
+    {
+      "descricao": "ADESIVO SILICONE MS HIBRIDO BRANCO FIXA TUDO 400G TEKBOND",
+      "quantidade": 2.0,
+      "valor_unit": 44.32,
+      "valor_total": 88.64,
+      "documento": "43251007928549000190550040007829581753240315.pdf"
+    }
+  ]
+}
