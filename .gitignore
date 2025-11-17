@@ -1,3 +1,9 @@
 config.json
 *.xml
 *.pdf
+build/
+dist/
+modules/
+temp/
+_pycache__/
+test*
