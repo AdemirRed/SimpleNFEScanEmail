@@ -205,18 +205,93 @@ Plugins permitem que a comunidade crie funcionalidades customizadas sem modifica
 
 ### **Plugins Inclusos**
 
-**📊 Exportador Excel**
+#### **📊 Exportador Excel**
 - Exporta itens para planilha .xlsx
 - Formatação profissional automática
 - Cabeçalhos coloridos, bordas, valores monetários
 - Congelamento de painéis
+- **Requisito:** `pip install openpyxl`
+
+#### **📊 Calculadora de Estatísticas**
+- Calcula estatísticas avançadas dos valores
+- Média, mediana, desvio padrão, quartis
+- Coeficiente de variação
+- Análise de dispersão e extremos
+- Interpretação automática dos resultados
+
+#### **🏢 Contador por Fornecedor**
+- Ranking de fornecedores por valor total
+- Contagem de itens e produtos únicos
+- Percentual do total de compras
+- Destaque visual para top 3 (ouro, prata, bronze)
+- Ideal para negociações
+
+#### **🔍 Busca Rápida**
+- Interface de busca dedicada
+- Busca por palavra-chave em produtos e fornecedores
+- Resultados com totalizador
+- Não é case-sensitive
+- Ideal para consultas rápidas
 
 ### **Como Usar Plugins**
 
+**Interface com Duas Abas:**
+
+1. **📋 Todos os Plugins** - Lista todos disponíveis (habilitados e desabilitados)
+2. **✅ Plugins Ativos** - Mostra apenas plugins habilitados e prontos para usar
+
+**Passo a Passo:**
+
 1. Na aba **Itens**, clique em **🧩 Plugins**
-2. Veja lista de plugins disponíveis
-3. Selecione um plugin e clique **✅ Habilitar**
-4. Clique **▶️ Executar Plugin**
+2. Navegue entre as abas conforme necessidade:
+   - **Todos os Plugins:** Para habilitar/desabilitar
+   - **Plugins Ativos:** Para ver quais estão rodando
+3. Selecione um plugin
+4. Clique **✅ Habilitar** (se desabilitado) ou **❌ Desabilitar** (se habilitado)
+5. Clique **▶️ Executar Plugin** para usar
+
+**Recursos do Gerenciador:**
+
+- 🔄 Atualizar lista de plugins
+- 📖 Abrir guia de desenvolvimento
+- ✅/❌ Habilitar/desabilitar plugins com 1 clique
+- ▶️ Executar plugins ativos
+- ⌨️ **Configurar teclas de atalho**
+- Contador de plugins ativos em tempo real
+
+### **⌨️ Teclas de Atalho para Plugins**
+
+Configure atalhos de teclado para executar plugins rapidamente!
+
+**Como Configurar:**
+
+1. No gerenciador de plugins, selecione um plugin
+2. Clique no botão **⌨️ Atalho**
+3. Digite o atalho desejado (ex: `Control-e`, `F5`, `Alt-p`)
+4. Clique em **Salvar**
+
+**Formatos Suportados:**
+
+- `Control-letra` → Ctrl + letra (ex: `Control-e` = Ctrl+E)
+- `Control-Shift-letra` → Ctrl + Shift + letra
+- `Alt-letra` → Alt + letra (ex: `Alt-p` = Alt+P)
+- `F1` a `F12` → Teclas de função
+
+**Exemplos de Uso:**
+
+- `F5` → Calculadora de Estatísticas
+- `Control-e` → Exportador Excel
+- `Alt-b` → Busca Rápida
+- `Control-Shift-f` → Contador de Fornecedores
+
+**Recursos:**
+
+- ✅ Atalhos salvos automaticamente
+- ✅ Funcionam em toda a aplicação
+- ✅ Validação de conflitos (não permite atalhos duplicados)
+- ✅ Exibição visual do atalho ao lado do nome do plugin
+- ✅ Remoção fácil de atalhos
+- ✅ Plugin precisa estar habilitado para usar o atalho
 
 ### **Como Criar Plugins**
 

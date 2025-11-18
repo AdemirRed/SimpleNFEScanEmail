@@ -1,0 +1,14 @@
+{
+  "exemplo_exportador_excel": {
+    "enabled": true
+  },
+  "busca_rapida": {
+    "enabled": true
+  },
+  "calculadora_simples": {
+    "enabled": true
+  },
+  "contador_fornecedor": {
+    "enabled": true
+  }
+}

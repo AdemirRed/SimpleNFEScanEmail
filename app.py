@@ -236,6 +236,12 @@ class SimpleNFEApp:
         
         # Inicializa monitores após UI estar pronta
         self._init_monitors()
+        
+        # Carrega plugins habilitados automaticamente
+        self._auto_load_plugins()
+        
+        # Registra atalhos de plugins
+        self._register_plugin_shortcuts()
 
     # ---- Aba Conexão ----
     def _build_tab_conn(self):
@@ -1425,6 +1431,21 @@ class SimpleNFEApp:
         except Exception as e:
             print(f"Erro ao inicializar monitores: {e}")
     
+    def _auto_load_plugins(self):
+        """Carrega automaticamente plugins que estão habilitados"""
+        try:
+            app_context = {
+                'app': self,
+                'extracted_items': self.extracted_items,
+                'config': self.cfg
+            }
+            
+            count = self.plugin_manager.auto_load_enabled_plugins(app_context)
+            if count > 0:
+                print(f"✅ {count} plugin(s) carregado(s) automaticamente")
+        except Exception as e:
+            print(f"⚠️ Erro ao carregar plugins automaticamente: {e}")
+    
     def _start_email_monitoring(self):
         """Inicia monitoramento de novos emails"""
         try:
@@ -2083,106 +2104,209 @@ class SimpleNFEApp:
         """Mostra janela de gerenciamento de plugins"""
         window = tk.Toplevel(self.root)
         window.title("Gerenciador de Plugins")
-        window.geometry("800x600")
-        window.minsize(700, 500)
+        window.geometry("900x700")
+        window.minsize(800, 600)
         
         # Frame superior - info e ações
         top_frame = ttk.Frame(window)
         top_frame.pack(fill=tk.X, padx=15, pady=12)
         
-        ttk.Label(top_frame, text="🧩 Plugins Disponíveis", font=('Segoe UI', 12, 'bold')).pack(side=tk.LEFT)
-        ttk.Button(top_frame, text="🔄 Atualizar Lista", command=lambda: self._refresh_plugin_list(tree)).pack(side=tk.RIGHT, padx=5)
+        ttk.Label(top_frame, text="🧩 Gerenciador de Plugins", font=('Segoe UI', 12, 'bold')).pack(side=tk.LEFT)
         ttk.Button(top_frame, text="📖 Guia de Desenvolvimento", command=self._show_plugin_dev_guide).pack(side=tk.RIGHT)
         
-        # Lista de plugins
-        list_frame = ttk.LabelFrame(window, text="Plugins", padding=10)
-        list_frame.pack(fill=tk.BOTH, expand=True, padx=15, pady=(0, 10))
+        # Notebook para separar plugins disponíveis e ativos
+        notebook = ttk.Notebook(window)
+        notebook.pack(fill=tk.BOTH, expand=True, padx=15, pady=(0, 10))
+        
+        # Aba 1: Todos os plugins
+        tab_all = ttk.Frame(notebook)
+        notebook.add(tab_all, text="📋 Todos os Plugins")
+        
+        # Frame com botão de atualizar
+        refresh_frame = ttk.Frame(tab_all)
+        refresh_frame.pack(fill=tk.X, padx=10, pady=8)
+        ttk.Button(refresh_frame, text="🔄 Atualizar Lista", command=lambda: self._refresh_all_plugins_list(tree_all)).pack(side=tk.LEFT)
+        
+        # Lista de todos os plugins
+        list_frame_all = ttk.Frame(tab_all)
+        list_frame_all.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
         
         cols = ("status", "name", "version", "author", "description")
-        tree = ttk.Treeview(list_frame, columns=cols, show='headings', height=12)
+        tree_all = ttk.Treeview(list_frame_all, columns=cols, show='headings')
         
-        tree.heading("status", text="Status")
-        tree.heading("name", text="Nome")
-        tree.heading("version", text="Versão")
-        tree.heading("author", text="Autor")
-        tree.heading("description", text="Descrição")
+        tree_all.heading("status", text="Status")
+        tree_all.heading("name", text="Nome")
+        tree_all.heading("version", text="Versão")
+        tree_all.heading("author", text="Autor")
+        tree_all.heading("description", text="Descrição")
         
-        tree.column("status", width=80, anchor=tk.CENTER)
-        tree.column("name", width=150)
-        tree.column("version", width=60, anchor=tk.CENTER)
-        tree.column("author", width=150)
-        tree.column("description", width=300)
+        tree_all.column("status", width=100, anchor=tk.CENTER)
+        tree_all.column("name", width=150)
+        tree_all.column("version", width=70, anchor=tk.CENTER)
+        tree_all.column("author", width=150)
+        tree_all.column("description", width=350)
         
-        scrollbar = ttk.Scrollbar(list_frame, orient=tk.VERTICAL, command=tree.yview)
-        tree.configure(yscrollcommand=scrollbar.set)
+        scrollbar_all = ttk.Scrollbar(list_frame_all, orient=tk.VERTICAL, command=tree_all.yview)
+        tree_all.configure(yscrollcommand=scrollbar_all.set)
         
-        tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        tree_all.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar_all.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        # Aba 2: Plugins ativos
+        tab_active = ttk.Frame(notebook)
+        notebook.add(tab_active, text="✅ Plugins Ativos")
+        
+        # Frame com botão de atualizar
+        refresh_frame_active = ttk.Frame(tab_active)
+        refresh_frame_active.pack(fill=tk.X, padx=10, pady=8)
+        ttk.Button(refresh_frame_active, text="🔄 Atualizar Lista", command=lambda: self._refresh_active_plugins_list(tree_active)).pack(side=tk.LEFT)
+        info_var = tk.StringVar(value="Plugins ativos: 0")
+        ttk.Label(refresh_frame_active, textvariable=info_var, font=('Segoe UI', 9, 'bold')).pack(side=tk.RIGHT)
+        
+        # Lista de plugins ativos
+        list_frame_active = ttk.Frame(tab_active)
+        list_frame_active.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
+        
+        cols_active = ("name", "version", "menu", "icon", "description")
+        tree_active = ttk.Treeview(list_frame_active, columns=cols_active, show='headings')
+        
+        tree_active.heading("name", text="Nome")
+        tree_active.heading("version", text="Versão")
+        tree_active.heading("menu", text="Menu")
+        tree_active.heading("icon", text="Ícone")
+        tree_active.heading("description", text="Descrição")
+        
+        tree_active.column("name", width=150)
+        tree_active.column("version", width=70, anchor=tk.CENTER)
+        tree_active.column("menu", width=150)
+        tree_active.column("icon", width=50, anchor=tk.CENTER)
+        tree_active.column("description", width=400)
+        
+        scrollbar_active = ttk.Scrollbar(list_frame_active, orient=tk.VERTICAL, command=tree_active.yview)
+        tree_active.configure(yscrollcommand=scrollbar_active.set)
+        
+        tree_active.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar_active.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        tree_active.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar_active.pack(side=tk.RIGHT, fill=tk.Y)
         
         # Botões de ação
         btn_frame = ttk.Frame(window)
         btn_frame.pack(fill=tk.X, padx=15, pady=(0, 15))
         
         def toggle_plugin():
-            selection = tree.selection()
-            if not selection:
-                messagebox.showwarning("Plugins", "Selecione um plugin primeiro.")
-                return
+            # Verifica qual aba está ativa
+            current_tab = notebook.index(notebook.select())
             
-            item = tree.item(selection[0])
-            values = item['values']
-            status = values[0]
-            plugin_name = values[1]
-            
-            # Busca o arquivo do plugin
-            discovered = self.plugin_manager.discover_plugins()
-            plugin_file = None
-            for p in discovered:
-                if p['name'] == plugin_name:
-                    plugin_file = p['file']
-                    break
-            
-            if not plugin_file:
-                messagebox.showerror("Erro", "Plugin não encontrado.")
-                return
-            
-            plugin_stem = Path(plugin_file).stem
-            
-            if status == "❌ Desabilitado":
-                # Carregar plugin
-                app_context = {
-                    'app': self,
-                    'extracted_items': self.extracted_items,
-                    'config': self.cfg
-                }
+            if current_tab == 0:  # Aba "Todos os Plugins"
+                selection = tree_all.selection()
+                if not selection:
+                    messagebox.showwarning("Plugins", "Selecione um plugin primeiro.")
+                    return
                 
-                if self.plugin_manager.load_plugin(plugin_file, app_context):
-                    messagebox.showinfo("Plugins", f"Plugin '{plugin_name}' carregado com sucesso!")
-                    self._refresh_plugin_list(tree)
+                item = tree_all.item(selection[0])
+                values = item['values']
+                status = values[0]
+                plugin_name = values[1]
+                
+                # Busca o arquivo do plugin
+                discovered = self.plugin_manager.discover_plugins()
+                plugin_file = None
+                for p in discovered:
+                    if p['name'] == plugin_name:
+                        plugin_file = p['file']
+                        break
+                
+                if not plugin_file:
+                    messagebox.showerror("Erro", "Plugin não encontrado.")
+                    return
+                
+                plugin_stem = Path(plugin_file).stem
+                
+                if status == "❌ Desabilitado":
+                    # Carregar plugin
+                    app_context = {
+                        'app': self,
+                        'extracted_items': self.extracted_items,
+                        'config': self.cfg
+                    }
+                    
+                    if self.plugin_manager.load_plugin(plugin_file, app_context):
+                        messagebox.showinfo("Plugins", f"Plugin '{plugin_name}' habilitado com sucesso!")
+                        self._refresh_all_plugins_list(tree_all)
+                        self._refresh_active_plugins_list(tree_active, info_var)
+                    else:
+                        messagebox.showerror("Erro", f"Falha ao habilitar plugin '{plugin_name}'.")
                 else:
-                    messagebox.showerror("Erro", f"Falha ao carregar plugin '{plugin_name}'.")
-            else:
-                # Descarregar plugin
+                    # Descarregar plugin
+                    if self.plugin_manager.unload_plugin(plugin_stem):
+                        messagebox.showinfo("Plugins", f"Plugin '{plugin_name}' desabilitado.")
+                        self._refresh_all_plugins_list(tree_all)
+                        self._refresh_active_plugins_list(tree_active, info_var)
+                    else:
+                        messagebox.showerror("Erro", f"Falha ao desabilitar plugin '{plugin_name}'.")
+            
+            else:  # Aba "Plugins Ativos"
+                selection = tree_active.selection()
+                if not selection:
+                    messagebox.showwarning("Plugins", "Selecione um plugin primeiro.")
+                    return
+                
+                item = tree_active.item(selection[0])
+                values = item['values']
+                plugin_name = values[0]
+                
+                # Busca o arquivo do plugin
+                discovered = self.plugin_manager.discover_plugins()
+                plugin_file = None
+                for p in discovered:
+                    if p['name'] == plugin_name:
+                        plugin_file = p['file']
+                        break
+                
+                if not plugin_file:
+                    messagebox.showerror("Erro", "Plugin não encontrado.")
+                    return
+                
+                plugin_stem = Path(plugin_file).stem
+                
+                # Desabilita o plugin
                 if self.plugin_manager.unload_plugin(plugin_stem):
-                    messagebox.showinfo("Plugins", f"Plugin '{plugin_name}' descarregado.")
-                    self._refresh_plugin_list(tree)
+                    messagebox.showinfo("Plugins", f"Plugin '{plugin_name}' desabilitado.")
+                    self._refresh_all_plugins_list(tree_all)
+                    self._refresh_active_plugins_list(tree_active, info_var)
                 else:
-                    messagebox.showerror("Erro", f"Falha ao descarregar plugin '{plugin_name}'.")
+                    messagebox.showerror("Erro", f"Falha ao desabilitar plugin '{plugin_name}'.")
         
         def execute_plugin():
-            selection = tree.selection()
-            if not selection:
-                messagebox.showwarning("Plugins", "Selecione um plugin primeiro.")
-                return
+            # Verifica qual aba está ativa
+            current_tab = notebook.index(notebook.select())
             
-            item = tree.item(selection[0])
-            values = item['values']
-            status = values[0]
-            plugin_name = values[1]
+            if current_tab == 0:  # Aba "Todos os Plugins"
+                selection = tree_all.selection()
+                if not selection:
+                    messagebox.showwarning("Plugins", "Selecione um plugin primeiro.")
+                    return
+                
+                item = tree_all.item(selection[0])
+                values = item['values']
+                status = values[0]
+                plugin_name = values[1]
+                
+                if status == "❌ Desabilitado":
+                    messagebox.showwarning("Plugins", f"Plugin '{plugin_name}' está desabilitado. Habilite-o primeiro.")
+                    return
             
-            if status == "❌ Desabilitado":
-                messagebox.showwarning("Plugins", f"Plugin '{plugin_name}' está desabilitado. Habilite-o primeiro.")
-                return
+            else:  # Aba "Plugins Ativos"
+                selection = tree_active.selection()
+                if not selection:
+                    messagebox.showwarning("Plugins", "Selecione um plugin primeiro.")
+                    return
+                
+                item = tree_active.item(selection[0])
+                values = item['values']
+                plugin_name = values[0]
             
             # Busca o plugin carregado
             discovered = self.plugin_manager.discover_plugins()
@@ -2211,25 +2335,36 @@ class SimpleNFEApp:
                         messagebox.showinfo("Plugin", result['message'])
                 else:
                     messagebox.showerror("Plugin", result.get('message', 'Erro desconhecido'))
+            
+            # Atualiza listas após execução (caso plugin tenha modificado dados)
+            self._refresh_items_tab()
         
-        ttk.Button(btn_frame, text="✅ Habilitar / ❌ Desabilitar", command=toggle_plugin).pack(side=tk.LEFT, padx=5)
-        ttk.Button(btn_frame, text="▶️ Executar Plugin", command=execute_plugin).pack(side=tk.LEFT, padx=5)
-        ttk.Button(btn_frame, text="✖ Fechar", command=window.destroy).pack(side=tk.RIGHT, padx=5)
+        ttk.Button(btn_frame, text="✅ Habilitar / ❌ Desabilitar", command=toggle_plugin, width=25).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="▶️ Executar Plugin", command=execute_plugin, width=20).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="⌨️ Atalho", command=lambda: self._configure_plugin_shortcut(tree_all, tree_active, info_var), width=15).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="✖ Fechar", command=window.destroy, width=15).pack(side=tk.RIGHT, padx=5)
         
-        # Carrega lista inicial
-        self._refresh_plugin_list(tree)
+        # Carrega listas iniciais
+        self._refresh_all_plugins_list(tree_all)
+        self._refresh_active_plugins_list(tree_active, info_var)
+        
+        # Registra atalhos globais
+        self._register_plugin_shortcuts()
     
-    def _refresh_plugin_list(self, tree):
-        """Atualiza lista de plugins na UI"""
+    def _refresh_all_plugins_list(self, tree):
+        """Atualiza lista de todos os plugins na UI"""
         tree.delete(*tree.get_children())
         
         discovered = self.plugin_manager.discover_plugins()
         
         for plugin in discovered:
             status = "✅ Habilitado" if plugin['enabled'] else "❌ Desabilitado"
+            shortcut = plugin.get('shortcut', '')
+            shortcut_display = f" ({shortcut})" if shortcut else ""
+            
             tree.insert('', tk.END, values=(
                 status,
-                plugin['name'],
+                plugin['name'] + shortcut_display,
                 plugin['version'],
                 plugin['author'],
                 plugin['description']
@@ -2244,6 +2379,43 @@ class SimpleNFEApp:
                 "Coloque arquivos .py na pasta 'plugins/'"
             ))
     
+    def _refresh_active_plugins_list(self, tree, info_var=None):
+        """Atualiza lista de plugins ativos na UI"""
+        tree.delete(*tree.get_children())
+        
+        loaded = self.plugin_manager.get_loaded_plugins()
+        
+        for plugin in loaded:
+            # Adiciona atalho se existir
+            name_display = plugin['name']
+            if plugin.get('shortcut'):
+                name_display += f" ({plugin['shortcut']})"
+            
+            tree.insert('', tk.END, values=(
+                name_display,
+                plugin['version'],
+                plugin['menu_label'],
+                plugin['toolbar_icon'] or '-',
+                plugin['description']
+            ))
+        
+        if not loaded:
+            tree.insert('', tk.END, values=(
+                "Nenhum plugin ativo",
+                "-",
+                "-",
+                "-",
+                "Habilite plugins na aba 'Todos os Plugins'"
+            ))
+        
+        # Atualiza contador
+        if info_var:
+            info_var.set(f"Plugins ativos: {len(loaded)}")
+    
+    def _refresh_plugin_list(self, tree):
+        """Compatibilidade com código antigo"""
+        self._refresh_all_plugins_list(tree)
+    
     def _show_plugin_dev_guide(self):
         """Abre guia de desenvolvimento de plugins"""
         guide_path = Path("PLUGIN_DEV_GUIDE.md")
@@ -2257,6 +2429,292 @@ class SimpleNFEApp:
                 "Arquivo PLUGIN_DEV_GUIDE.md não encontrado.\n\n"
                 "Consulte a pasta 'plugins/' para ver exemplos de plugins."
             )
+    
+    def _configure_plugin_shortcut(self, tree_all, tree_active, info_var):
+        """Configura tecla de atalho para um plugin"""
+        # Verifica qual aba está ativa
+        selection = tree_all.selection()
+        if not selection:
+            messagebox.showwarning("Atalho", "Selecione um plugin primeiro na aba 'Todos os Plugins'.")
+            return
+        
+        item = tree_all.item(selection[0])
+        values = item['values']
+        plugin_name_display = values[1]
+        
+        # Remove atalho existente do display
+        plugin_name = plugin_name_display.split(' (')[0]
+        
+        # Busca o plugin
+        discovered = self.plugin_manager.discover_plugins()
+        plugin_data = None
+        for p in discovered:
+            if p['name'] == plugin_name:
+                plugin_data = p
+                break
+        
+        if not plugin_data:
+            messagebox.showerror("Erro", "Plugin não encontrado.")
+            return
+        
+        plugin_stem = Path(plugin_data['file']).stem
+        current_shortcut = self.plugin_manager.get_plugin_shortcut(plugin_stem)
+        
+        # Janela de configuração
+        shortcut_window = tk.Toplevel(self.root)
+        shortcut_window.title(f"⌨️ Atalho - {plugin_name}")
+        shortcut_window.geometry("550x400")
+        shortcut_window.resizable(False, False)
+        shortcut_window.transient(self.root)
+        shortcut_window.grab_set()
+        
+        main_frame = ttk.Frame(shortcut_window, padding=20)
+        main_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Título
+        ttk.Label(
+            main_frame,
+            text=f"⌨️ Configurar Atalho",
+            font=('Segoe UI', 13, 'bold'),
+            foreground='#667eea'
+        ).pack(pady=(0, 10))
+        
+        ttk.Label(
+            main_frame,
+            text=f"Plugin: {plugin_name}",
+            font=('Segoe UI', 10)
+        ).pack(pady=(0, 20))
+        
+        # Info do atalho atual
+        if current_shortcut:
+            ttk.Label(
+                main_frame,
+                text=f"Atalho atual: {current_shortcut}",
+                font=('Segoe UI', 9, 'italic'),
+                foreground='green'
+            ).pack(pady=(0, 15))
+        else:
+            ttk.Label(
+                main_frame,
+                text="Nenhum atalho configurado",
+                font=('Segoe UI', 9, 'italic'),
+                foreground='gray'
+            ).pack(pady=(0, 15))
+        
+        # Frame de configuração
+        config_frame = ttk.LabelFrame(main_frame, text="Capturar Tecla", padding=15)
+        config_frame.pack(fill=tk.X, pady=(0, 15))
+        
+        ttk.Label(
+            config_frame, 
+            text="Clique no campo abaixo e pressione a tecla/combinação desejada:",
+            font=('Segoe UI', 9),
+            wraplength=480
+        ).pack(pady=(0, 10))
+        
+        # Campo de captura (Entry somente leitura)
+        capture_frame = ttk.Frame(config_frame)
+        capture_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        shortcut_var = tk.StringVar(value=current_shortcut or "Clique aqui e pressione a tecla...")
+        shortcut_entry = ttk.Entry(
+            capture_frame, 
+            textvariable=shortcut_var, 
+            width=40, 
+            font=('Segoe UI', 11, 'bold'),
+            justify='center',
+            state='readonly'
+        )
+        shortcut_entry.pack(fill=tk.X)
+        
+        # Variável para armazenar o atalho capturado
+        captured_shortcut = {'value': current_shortcut or ''}
+        
+        def on_key_press(event):
+            """Captura a tecla pressionada"""
+            # Limpa o placeholder na primeira tecla
+            if shortcut_var.get() == "Clique aqui e pressione a tecla...":
+                shortcut_var.set("")
+            
+            # Constrói o atalho no formato Tkinter
+            modifiers = []
+            
+            if event.state & 0x0004:  # Control
+                modifiers.append('Control')
+            if event.state & 0x0001:  # Shift
+                modifiers.append('Shift')
+            if event.state & 0x20000:  # Alt
+                modifiers.append('Alt')
+            
+            # Tecla principal
+            key = event.keysym
+            
+            # Ignora modificadores sozinhos
+            if key in ['Control_L', 'Control_R', 'Shift_L', 'Shift_R', 'Alt_L', 'Alt_R']:
+                return 'break'
+            
+            # Constrói string do atalho
+            if modifiers:
+                shortcut_str = '-'.join(modifiers) + '-' + key
+            else:
+                shortcut_str = key
+            
+            # Atualiza display
+            shortcut_var.set(shortcut_str)
+            captured_shortcut['value'] = shortcut_str
+            status_var.set("✅ Atalho capturado! Clique em 'Salvar' para confirmar.")
+            
+            return 'break'  # Previne processamento adicional
+        
+        def on_focus_in(event):
+            """Quando o campo ganha foco"""
+            if shortcut_var.get() in ["Clique aqui e pressione a tecla...", ""]:
+                shortcut_var.set("Aguardando tecla...")
+        
+        def on_focus_out(event):
+            """Quando o campo perde foco"""
+            if shortcut_var.get() == "Aguardando tecla...":
+                shortcut_var.set(captured_shortcut['value'] or "Clique aqui e pressione a tecla...")
+        
+        # Bind eventos
+        shortcut_entry.bind('<KeyPress>', on_key_press)
+        shortcut_entry.bind('<FocusIn>', on_focus_in)
+        shortcut_entry.bind('<FocusOut>', on_focus_out)
+        
+        # Torna o entry "clicável" mas não editável manualmente
+        shortcut_entry.configure(state='normal')
+        shortcut_entry.configure(cursor='hand2')
+        
+        # Dá foco inicial
+        shortcut_entry.focus_set()
+        
+        # Exemplos
+        examples_frame = ttk.Frame(config_frame)
+        examples_frame.pack(fill=tk.X, pady=(5, 0))
+        
+        ttk.Label(
+            examples_frame, 
+            text="💡 Dica: Experimente Ctrl+letra, Shift+letra, Alt+letra, ou F1-F12",
+            font=('Segoe UI', 8, 'italic'),
+            foreground='gray'
+        ).pack()
+        
+        # Status
+        status_var = tk.StringVar(value="")
+        status_label = ttk.Label(
+            main_frame, 
+            textvariable=status_var, 
+            font=('Segoe UI', 9), 
+            foreground='#667eea',
+            wraplength=480
+        )
+        status_label.pack(pady=(0, 10))
+        
+        def save_shortcut():
+            shortcut = captured_shortcut['value']
+            
+            if not shortcut or shortcut in ["Clique aqui e pressione a tecla...", "Aguardando tecla..."]:
+                status_var.set("⚠️ Capture uma tecla primeiro!")
+                return
+            
+            # Verifica se já está em uso
+            all_shortcuts = self.plugin_manager.get_all_shortcuts()
+            if shortcut in all_shortcuts and all_shortcuts[shortcut] != plugin_stem:
+                other_plugin = all_shortcuts[shortcut]
+                status_var.set(f"⚠️ Atalho já usado por '{other_plugin}'")
+                return
+            
+            # Salva
+            if self.plugin_manager.set_plugin_shortcut(plugin_stem, shortcut):
+                messagebox.showinfo(
+                    "Atalho Configurado",
+                    f"✅ Atalho '{shortcut}' salvo para '{plugin_name}'!\n\n"
+                    f"Use {shortcut} para executar o plugin rapidamente."
+                )
+                self._refresh_all_plugins_list(tree_all)
+                self._refresh_active_plugins_list(tree_active, info_var)
+                self._register_plugin_shortcuts()  # Re-registra atalhos
+                shortcut_window.destroy()
+            else:
+                status_var.set("❌ Erro ao salvar atalho")
+        
+        def clear_shortcut():
+            """Limpa o campo para capturar novo atalho"""
+            captured_shortcut['value'] = ''
+            shortcut_var.set("Clique aqui e pressione a tecla...")
+            status_var.set("")
+            shortcut_entry.focus_set()
+        
+        def remove_shortcut():
+            if not current_shortcut:
+                messagebox.showinfo("Remover Atalho", "Este plugin não possui atalho configurado.")
+                return
+            
+            if self.plugin_manager.remove_plugin_shortcut(plugin_stem):
+                messagebox.showinfo("Atalho Removido", f"Atalho '{current_shortcut}' removido.")
+                self._refresh_all_plugins_list(tree_all)
+                self._refresh_active_plugins_list(tree_active, info_var)
+                self._register_plugin_shortcuts()  # Re-registra atalhos
+                shortcut_window.destroy()
+            else:
+                messagebox.showerror("Erro", "Falha ao remover atalho.")
+        
+        # Botões
+        btn_frame = ttk.Frame(main_frame)
+        btn_frame.pack(fill=tk.X)
+        
+        ttk.Button(btn_frame, text="💾 Salvar", command=save_shortcut, width=12).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="🔄 Limpar", command=clear_shortcut, width=12).pack(side=tk.LEFT, padx=5)
+        if current_shortcut:
+            ttk.Button(btn_frame, text="🗑️ Remover", command=remove_shortcut, width=12).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="✖ Cancelar", command=shortcut_window.destroy, width=12).pack(side=tk.RIGHT, padx=5)
+    
+    def _register_plugin_shortcuts(self):
+        """Registra teclas de atalho globais para plugins"""
+        # Remove bindings anteriores (se existirem)
+        if hasattr(self, '_plugin_shortcut_bindings'):
+            for binding_id in self._plugin_shortcut_bindings:
+                try:
+                    self.root.unbind(binding_id)
+                except:
+                    pass
+        
+        self._plugin_shortcut_bindings = []
+        
+        # Registra novos atalhos
+        all_shortcuts = self.plugin_manager.get_all_shortcuts()
+        
+        for shortcut, plugin_stem in all_shortcuts.items():
+            # Converte formato para Tkinter
+            tk_shortcut = f"<{shortcut}>"
+            
+            # Cria função de callback
+            def make_callback(p_stem):
+                def callback(event):
+                    # Verifica se plugin está habilitado
+                    if p_stem in self.plugin_manager.loaded_plugins:
+                        result = self.plugin_manager.execute_plugin(
+                            p_stem,
+                            items=self.extracted_items,
+                            config=self.cfg
+                        )
+                        
+                        # Atualiza UI se necessário
+                        if isinstance(result, dict) and result.get('success'):
+                            self._refresh_items_tab()
+                    else:
+                        messagebox.showwarning(
+                            "Plugin Desabilitado",
+                            f"O plugin está desabilitado.\n\nHabilite-o no Gerenciador de Plugins."
+                        )
+                return callback
+            
+            try:
+                binding_id = self.root.bind(tk_shortcut, make_callback(plugin_stem))
+                self._plugin_shortcut_bindings.append(tk_shortcut)
+                print(f"✅ Atalho registrado: {shortcut} → {plugin_stem}")
+            except Exception as e:
+                print(f"⚠️ Erro ao registrar atalho {shortcut}: {e}")
 
     def _on_closing(self):
         """Chamado ao fechar o programa - salva configurações se persist ativo"""
