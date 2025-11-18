@@ -8,10 +8,13 @@ from datetime import datetime
 from pathlib import Path
 import base64
 from cryptography.fernet import Fernet
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2
 
 from modules.email_gmail import GmailClient
+from modules.llm_status import get_monitor as get_llm_monitor
+from modules.llm_analyzer import LLMAnalyzer
+from modules.html_exporter import HTMLExporter
+from modules.email_monitor import EmailMonitor
+from modules.plugin_manager import PluginManager
 
 # Configurações salvas em memória (priorizadas)
 _CONFIG_CACHE = None
@@ -184,6 +187,14 @@ class SimpleNFEApp:
         
         # Arquivos locais selecionados
         self.local_files = []
+        
+        # Monitores e módulos auxiliares
+        self.llm_monitor = None
+        self.email_monitor = None
+        self.llm_analyzer = None
+        
+        # Gerenciador de plugins
+        self.plugin_manager = PluginManager("plugins")
 
         self._build_ui()
         
@@ -222,6 +233,9 @@ class SimpleNFEApp:
         status = ttk.Frame(self.root)
         status.pack(fill=tk.X, side=tk.BOTTOM)
         ttk.Label(status, textvariable=self.status_var).pack(side=tk.LEFT, padx=10, pady=4)
+        
+        # Inicializa monitores após UI estar pronta
+        self._init_monitors()
 
     # ---- Aba Conexão ----
     def _build_tab_conn(self):
@@ -558,6 +572,10 @@ class SimpleNFEApp:
         
         self.btn_cancel_extract = ttk.Button(top, text="Cancelar", command=self._cancel_extraction_operation, state=tk.DISABLED)
         self.btn_cancel_extract.pack(side=tk.LEFT, padx=8)
+        
+        # Status da LLM
+        self.extract_llm_status_var = tk.StringVar(value="LLM: Verificando...")
+        ttk.Label(top, textvariable=self.extract_llm_status_var, foreground="gray").pack(side=tk.RIGHT, padx=8)
 
         # progresso
         self.extract_progress = ttk.Progressbar(self.tab_extract, mode='determinate', maximum=100)
@@ -826,6 +844,10 @@ class SimpleNFEApp:
         
         self.btn_cancel_local = ttk.Button(top, text="Cancelar", command=self._cancel_local_analysis_operation, state=tk.DISABLED)
         self.btn_cancel_local.pack(side=tk.LEFT, padx=8)
+        
+        # Status da LLM
+        self.local_llm_status_var = tk.StringVar(value="LLM: Verificando...")
+        ttk.Label(top, textvariable=self.local_llm_status_var, foreground="gray").pack(side=tk.RIGHT, padx=8)
 
         # Contador
         self.local_count_var = tk.StringVar(value="Arquivos selecionados: 0")
@@ -938,6 +960,7 @@ class SimpleNFEApp:
                 all_items = []
                 seen = set()
                 total = len(self.local_files)
+                skipped_pdfs = []  # PDFs que não puderam ser lidos
 
                 for idx, fpath in enumerate(self.local_files, start=1):
                     # Verifica cancelamento
@@ -963,8 +986,9 @@ class SimpleNFEApp:
                             print(f"\n[LOCAL] Texto extraído de {fname}: {len(text) if text else 0} caracteres")
                             
                             if not text or len(text.strip()) < 50:
-                                self.root.after(0, lambda f=fname: self.local_status_var.set(f"PDF vazio ou com pouco texto: {f}"))
-                                print(f"[LOCAL] PDF {fname} rejeitado: texto insuficiente")
+                                print(f"[LOCAL] PDF {fname} rejeitado: texto insuficiente (provavelmente imagem escaneada)")
+                                skipped_pdfs.append(fname)
+                                self.root.after(0, lambda f=fname: self.local_status_var.set(f"⚠️ PDF escaneado (sem texto): {f}"))
                                 items = []
                             else:
                                 print(f"[LOCAL] Enviando para LM Studio...")
@@ -1043,9 +1067,23 @@ class SimpleNFEApp:
                     self.local_status_var.set("Análise concluída."),
                     self.status_var.set("Análise local concluída")
                 ))
+                
+                # Monta mensagem de resultado
                 msg = f"Análise concluída.\n{new_items_count} itens novos adicionados de {total} arquivo(s)."
                 if len(all_items) > new_items_count:
                     msg += f"\n{len(all_items) - new_items_count} itens duplicados foram ignorados."
+                
+                # Informa sobre PDFs que não puderam ser lidos
+                if skipped_pdfs:
+                    msg += f"\n\n⚠️ ATENÇÃO: {len(skipped_pdfs)} PDF(s) não puderam ser lidos:"
+                    msg += "\n(Provavelmente são imagens escaneadas sem texto)"
+                    msg += "\n\nArquivos ignorados:"
+                    for pdf_name in skipped_pdfs[:5]:  # Mostra até 5
+                        msg += f"\n  • {pdf_name}"
+                    if len(skipped_pdfs) > 5:
+                        msg += f"\n  ... e mais {len(skipped_pdfs) - 5}"
+                    msg += "\n\nSugestão: Use ferramenta de OCR para converter esses PDFs em texto pesquisável."
+                
                 messagebox.showinfo("Análise Local", msg)
             except Exception as e:
                 error_msg = f"Erro na análise: {str(e)}"
@@ -1078,13 +1116,45 @@ class SimpleNFEApp:
 
     # ---- Aba Itens ----
     def _build_tab_items(self):
+        # Barra superior com resumo e ações principais
         top = ttk.Frame(self.tab_items)
         top.pack(fill=tk.X, padx=16, pady=12)
         self.items_summary_var = tk.StringVar(value="Itens: 0 | Valor total: 0.00")
-        ttk.Label(top, textvariable=self.items_summary_var).pack(side=tk.LEFT)
-        ttk.Button(top, text="Limpar Itens", command=self._clear_items).pack(side=tk.RIGHT, padx=(0, 8))
-        ttk.Button(top, text="Exportar CSV", command=self._export_items_csv).pack(side=tk.RIGHT)
+        ttk.Label(top, textvariable=self.items_summary_var, font=('Segoe UI', 10, 'bold')).pack(side=tk.LEFT)
+        
+        ttk.Button(top, text="📊 Resumo LLM", command=self._generate_llm_summary).pack(side=tk.RIGHT, padx=(0, 8))
+        ttk.Button(top, text="🌐 Exportar HTML", command=self._export_items_html).pack(side=tk.RIGHT, padx=(0, 8))
+        ttk.Button(top, text="🗑️ Limpar", command=self._clear_items).pack(side=tk.RIGHT, padx=(0, 8))
+        ttk.Button(top, text="📄 CSV", command=self._export_items_csv).pack(side=tk.RIGHT)
+        
+        # Barra de ferramentas profissionais
+        toolbar = ttk.Frame(self.tab_items)
+        toolbar.pack(fill=tk.X, padx=16, pady=(0, 8))
+        
+        # Frame esquerdo - Busca e filtros
+        left_tools = ttk.Frame(toolbar)
+        left_tools.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        
+        ttk.Label(left_tools, text="🔍 Buscar:").pack(side=tk.LEFT, padx=(0, 4))
+        self.items_search_var = tk.StringVar()
+        self.items_search_var.trace('w', lambda *args: self._filter_items())
+        search_entry = ttk.Entry(left_tools, textvariable=self.items_search_var, width=30)
+        search_entry.pack(side=tk.LEFT, padx=(0, 8))
+        
+        ttk.Button(left_tools, text="🏷️ Por Fornecedor", command=self._group_by_supplier).pack(side=tk.LEFT, padx=2)
+        ttk.Button(left_tools, text="📦 Por Produto", command=self._group_by_product).pack(side=tk.LEFT, padx=2)
+        ttk.Button(left_tools, text="🔄 Ver Tudo", command=self._refresh_items_tab).pack(side=tk.LEFT, padx=2)
+        
+        # Frame direito - Análises rápidas
+        right_tools = ttk.Frame(toolbar)
+        right_tools.pack(side=tk.RIGHT)
+        
+        ttk.Button(right_tools, text="💰 Top 10 +Caros", command=self._show_top_expensive).pack(side=tk.LEFT, padx=2)
+        ttk.Button(right_tools, text="📈 Top 10 +Qtd", command=self._show_top_quantity).pack(side=tk.LEFT, padx=2)
+        ttk.Button(right_tools, text="📊 Estatísticas", command=self._show_quick_stats).pack(side=tk.LEFT, padx=2)
+        ttk.Button(right_tools, text="🧩 Plugins", command=self._show_plugin_manager).pack(side=tk.LEFT, padx=2)
 
+        # Tabela de itens
         cols = ("documento", "descricao", "quantidade", "valor_unit", "valor_total")
         self.items_tree = ttk.Treeview(self.tab_items, columns=cols, show='headings')
         for col, text, w in [
@@ -1096,7 +1166,13 @@ class SimpleNFEApp:
         ]:
             self.items_tree.heading(col, text=text)
             self.items_tree.column(col, width=w, anchor=tk.W)
-        self.items_tree.pack(fill=tk.BOTH, expand=True, padx=16, pady=(0, 16))
+        
+        # Adiciona scrollbar horizontal
+        h_scroll = ttk.Scrollbar(self.tab_items, orient=tk.HORIZONTAL, command=self.items_tree.xview)
+        self.items_tree.configure(xscrollcommand=h_scroll.set)
+        
+        self.items_tree.pack(fill=tk.BOTH, expand=True, padx=16, pady=(0, 0))
+        h_scroll.pack(fill=tk.X, padx=16, pady=(0, 16))
 
     def _refresh_items_tab(self):
         if not hasattr(self, 'items_tree'):
@@ -1317,10 +1393,880 @@ class SimpleNFEApp:
                 messagebox.showinfo("Configurações", "Configurações salvas apenas na memória (serão perdidas ao fechar)!")
             # reset client
             self.gmail = None
+    
+    def _init_monitors(self):
+        """Inicializa os monitores de LLM e emails"""
+        try:
+            # Monitor de status LLM
+            llm_url = self.cfg.get('lmstudio', {}).get('url', 'http://127.0.0.1:1234')
+            self.llm_monitor = get_llm_monitor(llm_url, check_interval=15)
+            
+            # Callback para atualizar UI quando status mudar
+            def on_llm_status_change(is_available, message):
+                try:
+                    # Atualiza status nas abas
+                    if hasattr(self, 'extract_llm_status_var'):
+                        self.root.after(0, lambda: self.extract_llm_status_var.set(message))
+                    if hasattr(self, 'local_llm_status_var'):
+                        self.root.after(0, lambda: self.local_llm_status_var.set(message))
+                except Exception as e:
+                    print(f"Erro atualizando status LLM na UI: {e}")
+            
+            # Inicia monitoramento
+            self.llm_monitor.start_monitoring(on_llm_status_change)
+            
+            # Inicializa analisador LLM
+            llm_model = self.cfg.get('lmstudio', {}).get('model', 'qwen/qwen3-vl-4b')
+            self.llm_analyzer = LLMAnalyzer(llm_url, llm_model, max_tokens_per_request=5000)
+            
+            # Monitor de emails (inicia apenas se conectado)
+            self._start_email_monitoring()
+            
+        except Exception as e:
+            print(f"Erro ao inicializar monitores: {e}")
+    
+    def _start_email_monitoring(self):
+        """Inicia monitoramento de novos emails"""
+        try:
+            # Só inicia se tiver credenciais
+            email = self.cfg.get('email', {}).get('address', '')
+            password = self.cfg.get('email', {}).get('app_password', '')
+            
+            if not email or not password:
+                return
+            
+            # Inicializa monitor de emails
+            self.email_monitor = EmailMonitor(email, password, check_interval=300)
+            
+            # Callback para quando novos emails chegarem
+            def on_new_emails():
+                try:
+                    print("Novos emails detectados!")
+                    # Atualiza lista se estiver na aba de conexão
+                    if hasattr(self, 'nb') and self.nb.select() == self.nb.tabs()[0]:
+                        self.root.after(0, self.on_connect_and_list)
+                    # Mostra notificação
+                    self.root.after(0, lambda: self.status_var.set("✉ Novos emails recebidos!"))
+                except Exception as e:
+                    print(f"Erro processando novos emails: {e}")
+            
+            # Inicia monitoramento
+            self.email_monitor.start_monitoring(on_new_emails)
+            print("Monitor de emails iniciado")
+            
+        except Exception as e:
+            print(f"Erro ao iniciar monitor de emails: {e}")
+    
+    def _generate_llm_summary(self):
+        """Gera resumo inteligente dos itens usando LLM"""
+        if not self.extracted_items:
+            messagebox.showinfo("Resumo LLM", "Não há itens para analisar.")
+            return
+        
+        if not self.llm_analyzer:
+            messagebox.showerror("Erro", "Analisador LLM não inicializado.")
+            return
+        
+        # Verifica se LLM está disponível
+        if self.llm_monitor:
+            is_available, _ = self.llm_monitor.check_status()
+            if not is_available:
+                resp = messagebox.askyesno(
+                    "LLM Offline",
+                    "A LLM parece estar offline. Deseja tentar mesmo assim?"
+                )
+                if not resp:
+                    return
+        
+        # Janela para instruções personalizadas
+        instruction_window = tk.Toplevel(self.root)
+        instruction_window.title("Instruções para LLM")
+        instruction_window.geometry("650x550")
+        instruction_window.minsize(600, 500)
+        instruction_window.transient(self.root)
+        instruction_window.grab_set()
+        
+        # Container principal com scroll se necessário
+        main_container = ttk.Frame(instruction_window)
+        main_container.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        ttk.Label(main_container, text="💡 Instruções Personalizadas (Opcional)", 
+                 font=('Segoe UI', 11, 'bold')).pack(pady=(0, 10))
+        
+        ttk.Label(main_container, 
+                 text="Forneça instruções específicas para a análise.\nExemplos: 'Foque em materiais de escritório', 'Identifique oportunidades de economia'",
+                 justify=tk.LEFT).pack(pady=(0, 10))
+        
+        # Frame com exemplos rápidos
+        examples_frame = ttk.LabelFrame(main_container, text="Exemplos Rápidos", padding=10)
+        examples_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        custom_instruction = tk.StringVar()
+        
+        # Frame para área de texto com label
+        text_frame = ttk.LabelFrame(main_container, text="Digite sua instrução personalizada:", padding=10)
+        text_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
+        
+        instruction_text = tk.Text(text_frame, height=6, wrap=tk.WORD, font=('Segoe UI', 10))
+        instruction_text.pack(fill=tk.BOTH, expand=True)
+        
+        def set_example(text):
+            instruction_text.delete('1.0', tk.END)
+            instruction_text.insert('1.0', text)
+        
+        examples = [
+            ("📊 Gestão de Compras", "Identifique os produtos mais comprados, fornecedores principais e oportunidades de negociação em lote para redução de custos."),
+            ("📦 Controle de Estoque", "Analise padrões de consumo, sugira níveis ideais de estoque e identifique produtos com alto giro."),
+            ("💰 Redução de Custos", "Encontre produtos com preços variados entre fornecedores e sugira possíveis economias."),
+            ("📈 Tendências", "Identifique tendências de compra ao longo do tempo e produtos em crescimento."),
+        ]
+        
+        for i, (label, instruction) in enumerate(examples):
+            ttk.Button(examples_frame, text=label, 
+                      command=lambda i=instruction: set_example(i),
+                      width=22).grid(row=i//2, column=i%2, padx=5, pady=5, sticky=tk.EW)
+        
+        examples_frame.columnconfigure(0, weight=1)
+        examples_frame.columnconfigure(1, weight=1)
+        
+        # Botões de ação - agora fixos na parte inferior
+        btn_frame = ttk.Frame(instruction_window)
+        btn_frame.pack(fill=tk.X, side=tk.BOTTOM, padx=10, pady=(0, 10))
+        
+        user_instruction = None
+        
+        def on_continue():
+            nonlocal user_instruction
+            user_instruction = instruction_text.get('1.0', tk.END).strip()
+            instruction_window.destroy()
+            self._run_llm_analysis(user_instruction)
+        
+        def on_skip():
+            instruction_window.destroy()
+            self._run_llm_analysis(None)
+        
+        ttk.Button(btn_frame, text="▶ Continuar com Instruções", command=on_continue).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="⏭ Pular (Análise Padrão)", command=on_skip).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="❌ Cancelar", command=instruction_window.destroy).pack(side=tk.RIGHT, padx=5)
+    
+    def _run_llm_analysis(self, custom_instruction=None):
+        """Executa análise LLM com instruções opcionais"""
+        # Cria janela de progresso
+        progress_window = tk.Toplevel(self.root)
+        progress_window.title("Gerando Resumo LLM")
+        progress_window.geometry("500x200")
+        progress_window.transient(self.root)
+        progress_window.grab_set()
+        
+        ttk.Label(progress_window, text="Analisando itens com LLM...").pack(pady=20)
+        progress_bar = ttk.Progressbar(progress_window, mode='indeterminate')
+        progress_bar.pack(fill=tk.X, padx=20, pady=10)
+        progress_bar.start(10)
+        
+        status_var = tk.StringVar(value="Preparando análise...")
+        ttk.Label(progress_window, textvariable=status_var).pack(pady=10)
+        
+        cancel_requested = False
+        
+        def on_cancel():
+            nonlocal cancel_requested
+            cancel_requested = True
+            status_var.set("Cancelando...")
+        
+        ttk.Button(progress_window, text="Cancelar", command=on_cancel).pack(pady=10)
+        
+        def run_analysis():
+            try:
+                status_var.set("Enviando para LLM...")
+                
+                # Analisa itens com instrução personalizada
+                result = self.llm_analyzer.analyze_items(
+                    self.extracted_items,
+                    cancel_check=lambda: cancel_requested,
+                    custom_instruction=custom_instruction
+                )
+                
+                if cancel_requested:
+                    self.root.after(0, progress_window.destroy)
+                    return
+                
+                if not result or 'erro' in result:
+                    erro = result.get('erro', 'Erro desconhecido') if result else 'Erro desconhecido'
+                    self.root.after(0, lambda: messagebox.showerror("Erro", f"Falha ao gerar resumo: {erro}"))
+                    self.root.after(0, progress_window.destroy)
+                    return
+                
+                # Mostra resultado
+                self.root.after(0, lambda: self._show_llm_summary(result))
+                self.root.after(0, progress_window.destroy)
+                
+            except Exception as e:
+                self.root.after(0, lambda: messagebox.showerror("Erro", f"Erro ao gerar resumo: {str(e)}"))
+                self.root.after(0, progress_window.destroy)
+        
+        threading.Thread(target=run_analysis, daemon=True).start()
+    
+    def _show_llm_summary(self, analysis):
+        """Mostra janela com o resumo LLM"""
+        window = tk.Toplevel(self.root)
+        window.title("Resumo Inteligente - LLM")
+        window.geometry("900x650")
+        
+        # Frame com estatísticas
+        stats_frame = ttk.LabelFrame(window, text="📊 Estatísticas Calculadas", padding=15)
+        stats_frame.pack(fill=tk.X, padx=15, pady=10)
+        
+        stats = analysis.get('estatisticas', {})
+        
+        # Grid com estatísticas formatadas
+        stats_container = ttk.Frame(stats_frame)
+        stats_container.pack(fill=tk.X)
+        
+        # Coluna 1
+        col1 = ttk.Frame(stats_container)
+        col1.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=10)
+        
+        ttk.Label(col1, text="Total de itens:", font=('Segoe UI', 9, 'bold')).pack(anchor=tk.W)
+        ttk.Label(col1, text=f"{stats.get('total_itens', 0)}", font=('Segoe UI', 10)).pack(anchor=tk.W, pady=(0, 10))
+        
+        ttk.Label(col1, text="Tipos diferentes:", font=('Segoe UI', 9, 'bold')).pack(anchor=tk.W)
+        ttk.Label(col1, text=f"{stats.get('tipos_diferentes', 0)}", font=('Segoe UI', 10)).pack(anchor=tk.W, pady=(0, 10))
+        
+        # Coluna 2
+        col2 = ttk.Frame(stats_container)
+        col2.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=10)
+        
+        ttk.Label(col2, text="Valor total:", font=('Segoe UI', 9, 'bold')).pack(anchor=tk.W)
+        ttk.Label(col2, text=f"R$ {stats.get('valor_total', 0):,.2f}", 
+                 font=('Segoe UI', 10), foreground='#667eea').pack(anchor=tk.W, pady=(0, 10))
+        
+        ttk.Label(col2, text="Valor médio por item:", font=('Segoe UI', 9, 'bold')).pack(anchor=tk.W)
+        ttk.Label(col2, text=f"R$ {stats.get('valor_medio_por_item', 0):,.2f}", 
+                 font=('Segoe UI', 10)).pack(anchor=tk.W, pady=(0, 10))
+        
+        # Frame com resumo LLM - formatado
+        resumo_frame = ttk.LabelFrame(window, text="🤖 Análise Inteligente da LLM", padding=15)
+        resumo_frame.pack(fill=tk.BOTH, expand=True, padx=15, pady=10)
+        
+        # Scrollbar
+        scroll = ttk.Scrollbar(resumo_frame)
+        scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        # Text widget com formatação
+        text_widget = tk.Text(resumo_frame, wrap=tk.WORD, height=20, 
+                            font=('Segoe UI', 10), yscrollcommand=scroll.set,
+                            padx=10, pady=10, spacing1=2, spacing2=2, spacing3=4)
+        text_widget.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scroll.config(command=text_widget.yview)
+        
+        # Configura tags para formatação
+        text_widget.tag_config('heading2', font=('Segoe UI', 12, 'bold'), foreground='#667eea', spacing1=15, spacing3=8)
+        text_widget.tag_config('heading3', font=('Segoe UI', 11, 'bold'), foreground='#764ba2', spacing1=12, spacing3=6)
+        text_widget.tag_config('bold', font=('Segoe UI', 10, 'bold'), foreground='#667eea')
+        text_widget.tag_config('normal', font=('Segoe UI', 10))
+        text_widget.tag_config('list_item', font=('Segoe UI', 10), lmargin1=20, lmargin2=40)
+        
+        # Processa e insere o resumo com formatação
+        resumo = analysis.get('resumo_llm', 'Nenhum resumo disponível')
+        self._insert_formatted_text(text_widget, resumo)
+        
+        text_widget.configure(state='disabled')
+        
+        # Botões de ação
+        btn_frame = ttk.Frame(window)
+        btn_frame.pack(fill=tk.X, padx=15, pady=(0, 15))
+        
+        def export_with_summary():
+            """Exporta HTML incluindo o resumo LLM"""
+            try:
+                filepath = filedialog.asksaveasfilename(
+                    title="Salvar relatório HTML com resumo",
+                    defaultextension=".html",
+                    filetypes=[("HTML", "*.html"), ("Todos os arquivos", "*.*")]
+                )
+                
+                if filepath:
+                    # Exporta com resumo
+                    success = HTMLExporter.export_items(
+                        analysis.get('itens_agregados', self.extracted_items),
+                        filepath,
+                        estatisticas=stats,
+                        resumo_llm=resumo
+                    )
+                    
+                    if success:
+                        messagebox.showinfo("Exportação", f"Relatório exportado com sucesso!\n{filepath}")
+                        # Pergunta se quer abrir
+                        resp = messagebox.askyesno("Abrir arquivo", "Deseja abrir o relatório agora?")
+                        if resp:
+                            import webbrowser
+                            webbrowser.open(filepath)
+                    else:
+                        messagebox.showerror("Erro", "Falha ao exportar relatório.")
+            except Exception as e:
+                messagebox.showerror("Erro", f"Erro ao exportar: {str(e)}")
+        
+        ttk.Button(btn_frame, text="💾 Exportar HTML com Resumo", command=export_with_summary).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="✖ Fechar", command=window.destroy).pack(side=tk.RIGHT, padx=5)
+    
+    def _insert_formatted_text(self, text_widget, content):
+        """Insere texto formatado no widget Text com tags"""
+        lines = content.split('\n')
+        
+        for line in lines:
+            stripped = line.strip()
+            
+            if not stripped:
+                text_widget.insert(tk.END, '\n')
+                continue
+            
+            # Título nível 2 (##)
+            if stripped.startswith('## '):
+                text = stripped[3:].strip()
+                text_widget.insert(tk.END, text + '\n', 'heading2')
+            
+            # Título nível 3 (###)
+            elif stripped.startswith('### '):
+                text = stripped[4:].strip()
+                text_widget.insert(tk.END, text + '\n', 'heading3')
+            
+            # Item de lista
+            elif stripped.startswith('- '):
+                text = '• ' + stripped[2:].strip()
+                # Processa negrito dentro do item
+                self._insert_line_with_bold(text_widget, text, 'list_item')
+                text_widget.insert(tk.END, '\n')
+            
+            # Linha normal
+            else:
+                self._insert_line_with_bold(text_widget, stripped, 'normal')
+                text_widget.insert(tk.END, '\n')
+    
+    def _insert_line_with_bold(self, text_widget, line, default_tag):
+        """Insere linha processando **negrito**"""
+        import re
+        
+        # Encontra padrões **texto**
+        parts = re.split(r'(\*\*.+?\*\*)', line)
+        
+        for part in parts:
+            if part.startswith('**') and part.endswith('**'):
+                # Remove ** e insere com tag bold
+                text_widget.insert(tk.END, part[2:-2], 'bold')
+            elif part:
+                text_widget.insert(tk.END, part, default_tag)
+    
+    def _filter_items(self):
+        """Filtra itens baseado na busca"""
+        search_term = self.items_search_var.get().lower().strip()
+        
+        if not search_term:
+            self._refresh_items_tab()
+            return
+        
+        self.items_tree.delete(*self.items_tree.get_children())
+        total = 0.0
+        count = 0
+        
+        for it in self.extracted_items:
+            # Busca em múltiplos campos
+            if (search_term in it.get('descricao', '').lower() or
+                search_term in it.get('documento', '').lower() or
+                search_term in it.get('codigo', '').lower()):
+                
+                total += float(it.get('valor_total', 0) or 0)
+                count += 1
+                self.items_tree.insert('', tk.END, values=(
+                    it.get('documento',''),
+                    it.get('descricao',''),
+                    it.get('quantidade',0),
+                    it.get('valor_unit',0),
+                    it.get('valor_total',0),
+                ))
+        
+        self.items_summary_var.set(f"Filtrados: {count}/{len(self.extracted_items)} itens | Valor: {total:.2f}")
+    
+    def _group_by_supplier(self):
+        """Agrupa itens por fornecedor (documento)"""
+        if not self.extracted_items:
+            return
+        
+        from collections import defaultdict
+        suppliers = defaultdict(lambda: {'items': [], 'total': 0.0})
+        
+        for it in self.extracted_items:
+            doc = it.get('documento', 'Sem documento')
+            suppliers[doc]['items'].append(it)
+            suppliers[doc]['total'] += float(it.get('valor_total', 0) or 0)
+        
+        # Cria janela com agrupamento
+        window = tk.Toplevel(self.root)
+        window.title("📊 Agrupamento por Fornecedor")
+        window.geometry("900x600")
+        
+        # Lista de fornecedores
+        left_frame = ttk.Frame(window)
+        left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        ttk.Label(left_frame, text="Fornecedores (Clique para ver itens)", 
+                 font=('Segoe UI', 10, 'bold')).pack(pady=5)
+        
+        supplier_list = tk.Listbox(left_frame, font=('Consolas', 9))
+        supplier_list.pack(fill=tk.BOTH, expand=True)
+        
+        # Preenche lista ordenada por valor
+        sorted_suppliers = sorted(suppliers.items(), key=lambda x: x[1]['total'], reverse=True)
+        for doc, data in sorted_suppliers:
+            supplier_list.insert(tk.END, f"{doc[:40]:40} R$ {data['total']:>12,.2f}  ({len(data['items'])} itens)")
+        
+        # Detalhes do fornecedor selecionado
+        right_frame = ttk.Frame(window)
+        right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        ttk.Label(right_frame, text="Itens do Fornecedor", 
+                 font=('Segoe UI', 10, 'bold')).pack(pady=5)
+        
+        detail_tree = ttk.Treeview(right_frame, columns=("desc", "qtd", "valor"), show='headings')
+        detail_tree.heading("desc", text="Descrição")
+        detail_tree.heading("qtd", text="Qtd")
+        detail_tree.heading("valor", text="Valor Total")
+        detail_tree.column("desc", width=300)
+        detail_tree.column("qtd", width=80)
+        detail_tree.column("valor", width=100)
+        detail_tree.pack(fill=tk.BOTH, expand=True)
+        
+        def on_supplier_select(event):
+            selection = supplier_list.curselection()
+            if not selection:
+                return
+            
+            doc, data = sorted_suppliers[selection[0]]
+            detail_tree.delete(*detail_tree.get_children())
+            
+            for item in data['items']:
+                detail_tree.insert('', tk.END, values=(
+                    item.get('descricao', '')[:50],
+                    item.get('quantidade', 0),
+                    f"R$ {item.get('valor_total', 0):.2f}"
+                ))
+        
+        supplier_list.bind('<<ListboxSelect>>', on_supplier_select)
+    
+    def _group_by_product(self):
+        """Agrupa itens por produto (descrição)"""
+        if not self.extracted_items:
+            return
+        
+        from collections import defaultdict
+        products = defaultdict(lambda: {'quantidade': 0, 'valor_total': 0.0, 'docs': set()})
+        
+        for it in self.extracted_items:
+            desc = it.get('descricao', 'Sem descrição').strip().lower()
+            products[desc]['quantidade'] += float(it.get('quantidade', 0) or 0)
+            products[desc]['valor_total'] += float(it.get('valor_total', 0) or 0)
+            products[desc]['docs'].add(it.get('documento', ''))
+        
+        # Janela com produtos agrupados
+        window = tk.Toplevel(self.root)
+        window.title("📦 Agrupamento por Produto")
+        window.geometry("900x600")
+        
+        ttk.Label(window, text="Produtos Consolidados (Itens Idênticos Somados)", 
+                 font=('Segoe UI', 11, 'bold')).pack(pady=10)
+        
+        tree = ttk.Treeview(window, columns=("produto", "qtd", "valor", "fornecedores"), show='headings')
+        tree.heading("produto", text="Produto")
+        tree.heading("qtd", text="Quantidade Total")
+        tree.heading("valor", text="Valor Total")
+        tree.heading("fornecedores", text="Nº Fornecedores")
+        
+        tree.column("produto", width=450)
+        tree.column("qtd", width=120)
+        tree.column("valor", width=120)
+        tree.column("fornecedores", width=120)
+        
+        tree.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        # Preenche ordenado por valor
+        sorted_products = sorted(products.items(), key=lambda x: x[1]['valor_total'], reverse=True)
+        for desc, data in sorted_products:
+            tree.insert('', tk.END, values=(
+                desc.capitalize()[:60],
+                f"{data['quantidade']:.2f}",
+                f"R$ {data['valor_total']:.2f}",
+                len(data['docs'])
+            ))
+    
+    def _show_top_expensive(self):
+        """Mostra os 10 itens mais caros"""
+        if not self.extracted_items:
+            return
+        
+        sorted_items = sorted(self.extracted_items, 
+                            key=lambda x: float(x.get('valor_total', 0) or 0), 
+                            reverse=True)[:10]
+        
+        window = tk.Toplevel(self.root)
+        window.title("💰 Top 10 Itens Mais Caros")
+        window.geometry("800x500")
+        
+        ttk.Label(window, text="🏆 Top 10 Itens Mais Caros", 
+                 font=('Segoe UI', 12, 'bold')).pack(pady=10)
+        
+        tree = ttk.Treeview(window, columns=("rank", "desc", "qtd", "unit", "total", "doc"), show='headings')
+        tree.heading("rank", text="#")
+        tree.heading("desc", text="Descrição")
+        tree.heading("qtd", text="Qtd")
+        tree.heading("unit", text="Unitário")
+        tree.heading("total", text="Total")
+        tree.heading("doc", text="Documento")
+        
+        tree.column("rank", width=40)
+        tree.column("desc", width=300)
+        tree.column("qtd", width=70)
+        tree.column("unit", width=90)
+        tree.column("total", width=100)
+        tree.column("doc", width=150)
+        
+        tree.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        for i, item in enumerate(sorted_items, 1):
+            tree.insert('', tk.END, values=(
+                f"#{i}",
+                item.get('descricao', '')[:45],
+                item.get('quantidade', 0),
+                f"R$ {item.get('valor_unit', 0):.2f}",
+                f"R$ {item.get('valor_total', 0):.2f}",
+                item.get('documento', '')[:25]
+            ))
+    
+    def _show_top_quantity(self):
+        """Mostra os 10 itens com maior quantidade"""
+        if not self.extracted_items:
+            return
+        
+        sorted_items = sorted(self.extracted_items, 
+                            key=lambda x: float(x.get('quantidade', 0) or 0), 
+                            reverse=True)[:10]
+        
+        window = tk.Toplevel(self.root)
+        window.title("📈 Top 10 Itens com Maior Quantidade")
+        window.geometry("800x500")
+        
+        ttk.Label(window, text="🏆 Top 10 Itens com Maior Quantidade", 
+                 font=('Segoe UI', 12, 'bold')).pack(pady=10)
+        
+        tree = ttk.Treeview(window, columns=("rank", "desc", "qtd", "unit", "total", "doc"), show='headings')
+        tree.heading("rank", text="#")
+        tree.heading("desc", text="Descrição")
+        tree.heading("qtd", text="Quantidade")
+        tree.heading("unit", text="Unitário")
+        tree.heading("total", text="Total")
+        tree.heading("doc", text="Documento")
+        
+        tree.column("rank", width=40)
+        tree.column("desc", width=300)
+        tree.column("qtd", width=100)
+        tree.column("unit", width=90)
+        tree.column("total", width=100)
+        tree.column("doc", width=150)
+        
+        tree.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        for i, item in enumerate(sorted_items, 1):
+            tree.insert('', tk.END, values=(
+                f"#{i}",
+                item.get('descricao', '')[:45],
+                f"{item.get('quantidade', 0):.2f}",
+                f"R$ {item.get('valor_unit', 0):.2f}",
+                f"R$ {item.get('valor_total', 0):.2f}",
+                item.get('documento', '')[:25]
+            ))
+    
+    def _show_quick_stats(self):
+        """Mostra estatísticas rápidas dos itens"""
+        if not self.extracted_items:
+            messagebox.showinfo("Estatísticas", "Não há itens para analisar.")
+            return
+        
+        # Calcula estatísticas
+        total_items = len(self.extracted_items)
+        total_qtd = sum(float(it.get('quantidade', 0) or 0) for it in self.extracted_items)
+        total_valor = sum(float(it.get('valor_total', 0) or 0) for it in self.extracted_items)
+        
+        # Itens únicos por descrição
+        unique_products = len(set(it.get('descricao', '').lower().strip() for it in self.extracted_items))
+        
+        # Fornecedores únicos
+        unique_suppliers = len(set(it.get('documento', '') for it in self.extracted_items))
+        
+        # Valor médio
+        avg_valor = total_valor / total_items if total_items > 0 else 0
+        avg_qtd = total_qtd / total_items if total_items > 0 else 0
+        
+        # Item mais caro e mais barato
+        sorted_by_value = sorted(self.extracted_items, key=lambda x: float(x.get('valor_total', 0) or 0))
+        most_expensive = sorted_by_value[-1] if sorted_by_value else {}
+        cheapest = sorted_by_value[0] if sorted_by_value else {}
+        
+        # Janela com estatísticas
+        window = tk.Toplevel(self.root)
+        window.title("📊 Estatísticas Rápidas")
+        window.geometry("600x500")
+        
+        ttk.Label(window, text="📊 Análise Rápida de Itens", 
+                 font=('Segoe UI', 14, 'bold')).pack(pady=15)
+        
+        # Frame com cards de estatísticas
+        stats_frame = ttk.Frame(window)
+        stats_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
+        
+        stats_text = f"""
+═══════════════════════════════════════════════════════════
+
+📦 RESUMO GERAL
+   • Total de registros: {total_items}
+   • Produtos únicos: {unique_products}
+   • Fornecedores diferentes: {unique_suppliers}
+
+💰 VALORES
+   • Valor total: R$ {total_valor:,.2f}
+   • Valor médio por item: R$ {avg_valor:,.2f}
+   • Item mais caro: R$ {float(most_expensive.get('valor_total', 0)):,.2f}
+     └─ {most_expensive.get('descricao', 'N/A')[:40]}
+   • Item mais barato: R$ {float(cheapest.get('valor_total', 0)):,.2f}
+     └─ {cheapest.get('descricao', 'N/A')[:40]}
+
+📊 QUANTIDADES
+   • Quantidade total: {total_qtd:,.2f}
+   • Quantidade média: {avg_qtd:,.2f}
+
+═══════════════════════════════════════════════════════════
+        """
+        
+        text_widget = tk.Text(stats_frame, wrap=tk.WORD, font=('Consolas', 10))
+        text_widget.pack(fill=tk.BOTH, expand=True)
+        text_widget.insert('1.0', stats_text)
+        text_widget.configure(state='disabled')
+        
+        ttk.Button(window, text="Fechar", command=window.destroy).pack(pady=10)
+    
+    def _export_items_html(self):
+        """Exporta itens para HTML"""
+        if not self.extracted_items:
+            messagebox.showinfo("Exportação HTML", "Não há itens para exportar.")
+            return
+        
+        try:
+            filepath = filedialog.asksaveasfilename(
+                title="Salvar relatório HTML",
+                defaultextension=".html",
+                filetypes=[("HTML", "*.html"), ("Todos os arquivos", "*.*")]
+            )
+            
+            if filepath:
+                success = HTMLExporter.export_items(self.extracted_items, filepath)
+                
+                if success:
+                    messagebox.showinfo("Exportação", f"Relatório HTML exportado com sucesso!\n{filepath}")
+                    # Pergunta se quer abrir
+                    resp = messagebox.askyesno("Abrir arquivo", "Deseja abrir o arquivo agora?")
+                    if resp:
+                        import webbrowser
+                        webbrowser.open(filepath)
+                else:
+                    messagebox.showerror("Erro", "Falha ao exportar relatório HTML.")
+        except Exception as e:
+            messagebox.showerror("Erro", f"Erro ao exportar HTML: {str(e)}")
+
+    def _show_plugin_manager(self):
+        """Mostra janela de gerenciamento de plugins"""
+        window = tk.Toplevel(self.root)
+        window.title("Gerenciador de Plugins")
+        window.geometry("800x600")
+        window.minsize(700, 500)
+        
+        # Frame superior - info e ações
+        top_frame = ttk.Frame(window)
+        top_frame.pack(fill=tk.X, padx=15, pady=12)
+        
+        ttk.Label(top_frame, text="🧩 Plugins Disponíveis", font=('Segoe UI', 12, 'bold')).pack(side=tk.LEFT)
+        ttk.Button(top_frame, text="🔄 Atualizar Lista", command=lambda: self._refresh_plugin_list(tree)).pack(side=tk.RIGHT, padx=5)
+        ttk.Button(top_frame, text="📖 Guia de Desenvolvimento", command=self._show_plugin_dev_guide).pack(side=tk.RIGHT)
+        
+        # Lista de plugins
+        list_frame = ttk.LabelFrame(window, text="Plugins", padding=10)
+        list_frame.pack(fill=tk.BOTH, expand=True, padx=15, pady=(0, 10))
+        
+        cols = ("status", "name", "version", "author", "description")
+        tree = ttk.Treeview(list_frame, columns=cols, show='headings', height=12)
+        
+        tree.heading("status", text="Status")
+        tree.heading("name", text="Nome")
+        tree.heading("version", text="Versão")
+        tree.heading("author", text="Autor")
+        tree.heading("description", text="Descrição")
+        
+        tree.column("status", width=80, anchor=tk.CENTER)
+        tree.column("name", width=150)
+        tree.column("version", width=60, anchor=tk.CENTER)
+        tree.column("author", width=150)
+        tree.column("description", width=300)
+        
+        scrollbar = ttk.Scrollbar(list_frame, orient=tk.VERTICAL, command=tree.yview)
+        tree.configure(yscrollcommand=scrollbar.set)
+        
+        tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        # Botões de ação
+        btn_frame = ttk.Frame(window)
+        btn_frame.pack(fill=tk.X, padx=15, pady=(0, 15))
+        
+        def toggle_plugin():
+            selection = tree.selection()
+            if not selection:
+                messagebox.showwarning("Plugins", "Selecione um plugin primeiro.")
+                return
+            
+            item = tree.item(selection[0])
+            values = item['values']
+            status = values[0]
+            plugin_name = values[1]
+            
+            # Busca o arquivo do plugin
+            discovered = self.plugin_manager.discover_plugins()
+            plugin_file = None
+            for p in discovered:
+                if p['name'] == plugin_name:
+                    plugin_file = p['file']
+                    break
+            
+            if not plugin_file:
+                messagebox.showerror("Erro", "Plugin não encontrado.")
+                return
+            
+            plugin_stem = Path(plugin_file).stem
+            
+            if status == "❌ Desabilitado":
+                # Carregar plugin
+                app_context = {
+                    'app': self,
+                    'extracted_items': self.extracted_items,
+                    'config': self.cfg
+                }
+                
+                if self.plugin_manager.load_plugin(plugin_file, app_context):
+                    messagebox.showinfo("Plugins", f"Plugin '{plugin_name}' carregado com sucesso!")
+                    self._refresh_plugin_list(tree)
+                else:
+                    messagebox.showerror("Erro", f"Falha ao carregar plugin '{plugin_name}'.")
+            else:
+                # Descarregar plugin
+                if self.plugin_manager.unload_plugin(plugin_stem):
+                    messagebox.showinfo("Plugins", f"Plugin '{plugin_name}' descarregado.")
+                    self._refresh_plugin_list(tree)
+                else:
+                    messagebox.showerror("Erro", f"Falha ao descarregar plugin '{plugin_name}'.")
+        
+        def execute_plugin():
+            selection = tree.selection()
+            if not selection:
+                messagebox.showwarning("Plugins", "Selecione um plugin primeiro.")
+                return
+            
+            item = tree.item(selection[0])
+            values = item['values']
+            status = values[0]
+            plugin_name = values[1]
+            
+            if status == "❌ Desabilitado":
+                messagebox.showwarning("Plugins", f"Plugin '{plugin_name}' está desabilitado. Habilite-o primeiro.")
+                return
+            
+            # Busca o plugin carregado
+            discovered = self.plugin_manager.discover_plugins()
+            plugin_file = None
+            for p in discovered:
+                if p['name'] == plugin_name:
+                    plugin_file = p['file']
+                    break
+            
+            if not plugin_file:
+                messagebox.showerror("Erro", "Plugin não encontrado.")
+                return
+            
+            plugin_stem = Path(plugin_file).stem
+            
+            # Executa o plugin
+            result = self.plugin_manager.execute_plugin(
+                plugin_stem,
+                items=self.extracted_items,
+                config=self.cfg
+            )
+            
+            if isinstance(result, dict) and 'success' in result:
+                if result['success']:
+                    if 'message' in result:
+                        messagebox.showinfo("Plugin", result['message'])
+                else:
+                    messagebox.showerror("Plugin", result.get('message', 'Erro desconhecido'))
+        
+        ttk.Button(btn_frame, text="✅ Habilitar / ❌ Desabilitar", command=toggle_plugin).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="▶️ Executar Plugin", command=execute_plugin).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="✖ Fechar", command=window.destroy).pack(side=tk.RIGHT, padx=5)
+        
+        # Carrega lista inicial
+        self._refresh_plugin_list(tree)
+    
+    def _refresh_plugin_list(self, tree):
+        """Atualiza lista de plugins na UI"""
+        tree.delete(*tree.get_children())
+        
+        discovered = self.plugin_manager.discover_plugins()
+        
+        for plugin in discovered:
+            status = "✅ Habilitado" if plugin['enabled'] else "❌ Desabilitado"
+            tree.insert('', tk.END, values=(
+                status,
+                plugin['name'],
+                plugin['version'],
+                plugin['author'],
+                plugin['description']
+            ))
+        
+        if not discovered:
+            tree.insert('', tk.END, values=(
+                "ℹ️",
+                "Nenhum plugin encontrado",
+                "-",
+                "-",
+                "Coloque arquivos .py na pasta 'plugins/'"
+            ))
+    
+    def _show_plugin_dev_guide(self):
+        """Abre guia de desenvolvimento de plugins"""
+        guide_path = Path("PLUGIN_DEV_GUIDE.md")
+        
+        if guide_path.exists():
+            import webbrowser
+            webbrowser.open(str(guide_path.absolute()))
+        else:
+            messagebox.showinfo(
+                "Guia de Plugins",
+                "Arquivo PLUGIN_DEV_GUIDE.md não encontrado.\n\n"
+                "Consulte a pasta 'plugins/' para ver exemplos de plugins."
+            )
 
     def _on_closing(self):
         """Chamado ao fechar o programa - salva configurações se persist ativo"""
         try:
+            # Para monitores
+            if self.llm_monitor:
+                self.llm_monitor.stop_monitoring()
+            if self.email_monitor:
+                self.email_monitor.stop_monitoring()
+            
             # Só persiste se checkbox estiver marcado
             if hasattr(self, 'persist_config_var') and self.persist_config_var.get():
                 save_config(self.cfg, persist=True)

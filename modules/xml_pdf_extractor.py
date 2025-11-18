@@ -8,8 +8,12 @@ from typing import List, Dict, Tuple
 def _extract_text_pdfminer(path: str) -> str:
     try:
         from pdfminer.high_level import extract_text  # type: ignore
-        return extract_text(path) or ""
-    except Exception:
+        text = extract_text(path) or ""
+        # Remove caracteres de controle e limpa
+        text = ''.join(char for char in text if char.isprintable() or char in '\n\r\t')
+        return text.strip()
+    except Exception as e:
+        print(f"Erro pdfminer: {e}")
         return ""
 
 
@@ -20,17 +24,39 @@ def _extract_text_pypdf(path: str) -> str:
             reader = PyPDF2.PdfReader(f)
             texts = []
             for page in reader.pages:
-                texts.append(page.extract_text() or "")
-            return "\n".join(texts)
-    except Exception:
+                page_text = page.extract_text() or ""
+                if page_text:
+                    texts.append(page_text)
+            combined = "\n".join(texts)
+            # Remove caracteres de controle e limpa
+            combined = ''.join(char for char in combined if char.isprintable() or char in '\n\r\t')
+            return combined.strip()
+    except Exception as e:
+        print(f"Erro PyPDF2: {e}")
         return ""
 
 
 def extract_text_from_pdf(path: str) -> str:
+    """Extrai texto de PDF com fallback entre múltiplas bibliotecas"""
+    print(f"[PDF] Tentando extrair de: {os.path.basename(path)}")
+    
+    # Tenta pdfminer primeiro (melhor qualidade)
     text = _extract_text_pdfminer(path)
-    if text.strip():
+    if text and len(text.strip()) > 50:
+        print(f"[PDF] Extraído via pdfminer: {len(text)} caracteres")
         return text
-    return _extract_text_pypdf(path)
+    
+    # Fallback para PyPDF2
+    text = _extract_text_pypdf(path)
+    if text and len(text.strip()) > 50:
+        print(f"[PDF] Extraído via PyPDF2: {len(text)} caracteres")
+        return text
+    
+    # Se falhou, pode ser PDF escaneado (imagem)
+    print(f"[PDF] AVISO: PDF pode ser escaneado (imagem) - OCR não implementado")
+    print(f"[PDF] Sugestão: Use ferramenta de OCR ou converta para PDF pesquisável")
+    
+    return text
 
 
 # XML NFe extraction
